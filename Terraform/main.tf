@@ -22,11 +22,21 @@ resource "docker_network" "mlops_net" {
   name = "mlops_net"
 }
 
-resource "docker_volume" "pg_data"    { name = "pg_data" }
-resource "docker_volume" "minio_data" { name = "minio_data" }
-resource "docker_volume" "mlflow_art" { name = "mlflow_art" } 
-resource "docker_volume" "prom_data"  { name = "prom_data" }
-resource "docker_volume" "graf_data"  { name = "graf_data" }
+resource "docker_volume" "pg_data"{ 
+    name = "pg_data" 
+    }
+resource "docker_volume" "minio_data" { 
+    name = "minio_data" 
+    }
+resource "docker_volume" "mlflow_art" { 
+    name = "mlflow_art" 
+    } 
+resource "docker_volume" "prom_data"  { 
+    name = "prom_data" 
+    }
+resource "docker_volume" "graf_data"  { 
+    name = "graf_data" 
+    }
 
 # ---------- Images ----------
 data "docker_image" "postgres"  { name = "postgres:15-alpine" }
