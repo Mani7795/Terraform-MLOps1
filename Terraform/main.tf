@@ -63,8 +63,9 @@ data "docker_image" "prom"      {
 data "docker_image" "grafana"   { 
     name = "grafana/grafana:latest" 
     }
-data "docker_image" "mc"        { 
-    name = "minio/mc:latest" 
+resource "docker_image" "mc" {
+    name         = "bitnami/minio-client:latest"
+    keep_locally = true
     }
 
 # Build the FastAPI image from local Dockerfile
@@ -134,24 +135,28 @@ resource "docker_container" "minio" {
 # ---------- Create MinIO bucket via mc (one-time) ----------
 resource "docker_container" "mc_bootstrap" {
   name    = "mc-bootstrap"
-  image   = data.docker_image.mc.name
+  image   = docker_image.mc.name
   restart = "no"
 
   env = [
     "MINIO_ACCESS=${var.minio_access_key}",
-    "MINIO_SECRET=${var.minio_secret_key}"
+    "MINIO_SECRET=${var.minio_secret_key}",
+    "BUCKET=${var.minio_bucket}"
   ]
 
-  # Create bucket if not exists and then exit
+  # Create bucket if not exists, then exit
   command = [
-    "sh", "-c",
-    "mc alias set local http://minio:9000 $MINIO_ACCESS $MINIO_SECRET && mc mb -p local/${var.minio_bucket} || true"
+    "bash","-c",
+    "mc alias set local http://minio:9000 $MINIO_ACCESS $MINIO_SECRET && " ,
+    "mc ls local || true && " ,
+    "mc mb -p local/$BUCKET || true"
   ]
 
   networks_advanced { name = docker_network.mlops_net.name }
 
   depends_on = [ docker_container.minio ]
 }
+
 
 # ---------- MLflow (Postgres backend + MinIO artifacts) ----------
 resource "docker_container" "mlflow" {
