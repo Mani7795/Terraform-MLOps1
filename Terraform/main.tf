@@ -16,21 +16,27 @@ terraform {
   }
 }
 
+locals {
+  # Absolute paths based on the folder that contains THIS main.tf
+  repo_root      = abspath("${path.module}/..")
+  dags_dir       = abspath("${path.module}/../services/airflow/dags")
+  fastapi_ctx    = abspath("${path.module}/../services/fastapi")
+  prometheus_cfg = abspath("${path.module}/prometheus.yml")
+}
+
 provider "docker" {}
 
+# ---------- Network & Volumes ----------
 resource "docker_network" "mlops_net" {
   name = "mlops_net"
 }
 
-resource "docker_volume" "pg_data"{ 
+resource "docker_volume" "pg_data"    { 
     name = "pg_data" 
     }
 resource "docker_volume" "minio_data" { 
     name = "minio_data" 
     }
-resource "docker_volume" "mlflow_art" { 
-    name = "mlflow_art" 
-    } 
 resource "docker_volume" "prom_data"  { 
     name = "prom_data" 
     }
@@ -39,26 +45,41 @@ resource "docker_volume" "graf_data"  {
     }
 
 # ---------- Images ----------
-data "docker_image" "postgres"  { name = "postgres:15-alpine" }
-data "docker_image" "minio"     { name = "minio/minio:latest" }
-data "docker_image" "mlflow"    { name = "ghcr.io/mlflow/mlflow:latest" } # community image
-data "docker_image" "airflow"   { name = "apache/airflow:2.9.3" }
-data "docker_image" "prom"      { name = "prom/prometheus:latest" }
-data "docker_image" "grafana"   { name = "grafana/grafana:latest" }
+data "docker_image" "postgres"  { 
+    name = "postgres:15-alpine" 
+    }
+data "docker_image" "minio"     { 
+    name = "minio/minio:latest" 
+    }
+data "docker_image" "mlflow"    { 
+    name = "ghcr.io/mlflow/mlflow:latest" 
+    }
+data "docker_image" "airflow"   { 
+    name = "apache/airflow:2.9.3-python3.11" 
+    }
+data "docker_image" "prom"      { 
+    name = "prom/prometheus:latest" 
+    }
+data "docker_image" "grafana"   { 
+    name = "grafana/grafana:latest" 
+    }
+data "docker_image" "mc"        { 
+    name = "minio/mc:latest" 
+    }
 
 # Build the FastAPI image from local Dockerfile
 resource "docker_image" "fastapi" {
   name = "mlops-fastapi:latest"
   build {
-    context = "${path.root}/../services/fastapi"
+    context    = local.fastapi_ctx
     dockerfile = "Dockerfile"
   }
 }
 
 # ---------- Postgres ----------
 resource "docker_container" "postgres" {
-  name  = "pg"
-  image = data.docker_image.postgres.name
+  name    = "pg"
+  image   = data.docker_image.postgres.name
   restart = "unless-stopped"
 
   env = [
@@ -67,25 +88,23 @@ resource "docker_container" "postgres" {
     "POSTGRES_DB=${var.pg_db}"
   ]
 
-  ports {
+  ports { 
     internal = 5432
-    external = 5432
-  }
+    external = 5432 
+    }
 
   volumes {
     volume_name    = docker_volume.pg_data.name
     container_path = "/var/lib/postgresql/data"
   }
 
-  networks_advanced {
-    name = docker_network.mlops_net.name
-  }
+  networks_advanced { name = docker_network.mlops_net.name }
 }
 
 # ---------- MinIO (S3-compatible) ----------
 resource "docker_container" "minio" {
-  name  = "minio"
-  image = data.docker_image.minio.name
+  name    = "minio"
+  image   = data.docker_image.minio.name
   restart = "unless-stopped"
 
   env = [
@@ -95,80 +114,108 @@ resource "docker_container" "minio" {
 
   command = ["server", "/data", "--console-address", ":9001"]
 
-  ports {
-    internal = 9000
-    external = 9000
-  }
-  ports {
+  ports { 
+    internal = 9000 
+    external = 9000 
+    }
+  ports { 
     internal = 9001
-    external = 9001
-  }
+    external = 9001 
+   }
 
   volumes {
     volume_name    = docker_volume.minio_data.name
     container_path = "/data"
   }
 
-  networks_advanced {
-    name = docker_network.mlops_net.name
-  }
+  networks_advanced { name = docker_network.mlops_net.name }
 }
 
-# ---------- MLflow (using Postgres backend + MinIO artifacts) ----------
+# ---------- Create MinIO bucket via mc (one-time) ----------
+resource "docker_container" "mc_bootstrap" {
+  name    = "mc-bootstrap"
+  image   = data.docker_image.mc.name
+  restart = "no"
+
+  env = [
+    "MINIO_ACCESS=${var.minio_access_key}",
+    "MINIO_SECRET=${var.minio_secret_key}"
+  ]
+
+  # Create bucket if not exists and then exit
+  command = [
+    "sh", "-c",
+    "mc alias set local http://minio:9000 $MINIO_ACCESS $MINIO_SECRET && mc mb -p local/${var.minio_bucket} || true"
+  ]
+
+  networks_advanced { name = docker_network.mlops_net.name }
+
+  depends_on = [ docker_container.minio ]
+}
+
+# ---------- MLflow (Postgres backend + MinIO artifacts) ----------
 resource "docker_container" "mlflow" {
-  name  = "mlflow"
-  image = data.docker_image.mlflow.name
+  name    = "mlflow"
+  image   = data.docker_image.mlflow.name
   restart = "unless-stopped"
 
   env = [
-    "MLFLOW_BACKEND_STORE_URI=postgresql+psycopg2://${var.pg_user}:${var.pg_password}@pg:5432/${var.pg_db}",
     "MLFLOW_S3_ENDPOINT_URL=http://minio:9000",
     "AWS_ACCESS_KEY_ID=${var.minio_access_key}",
     "AWS_SECRET_ACCESS_KEY=${var.minio_secret_key}"
   ]
 
-  command = ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000",
-             "--backend-store-uri", "postgresql+psycopg2://${var.pg_user}:${var.pg_password}@pg:5432/${var.pg_db}",
-             "--default-artifact-root", "s3://${var.minio_bucket}/"]
+  command = [
+    "mlflow", "server",
+    "--host", "0.0.0.0", "--port", "5000",
+    "--backend-store-uri", "postgresql+psycopg2://${var.pg_user}:${var.pg_password}@pg:5432/${var.pg_db}",
+    "--default-artifact-root", "s3://${var.minio_bucket}/"
+  ]
 
-  ports {
+  ports { 
     internal = 5000
-    external = 5000
-  }
+    external = 5000 
+   }
 
-  networks_advanced {
-    name = docker_network.mlops_net.name
-  }
+  networks_advanced { name = docker_network.mlops_net.name }
 
   depends_on = [
     docker_container.postgres,
-    docker_container.minio
+    docker_container.minio,
+    docker_container.mc_bootstrap
   ]
 }
 
 # ---------- FastAPI Inference Service ----------
 resource "docker_container" "fastapi" {
-  name  = "fastapi"
-  image = docker_image.fastapi.name
+  name    = "fastapi"
+  image   = docker_image.fastapi.name
   restart = "unless-stopped"
 
   env = [
-    "DATABASE_URL=postgresql://${var.pg_user}:${var.pg_password}@pg:5432/${var.pg_db}",
+    "DB_HOST=pg",
+    "DB_PORT=5432",
+    "DB_NAME=${var.pg_db}",
+    "DB_USER=${var.pg_user}",
+    "DB_PASSWORD=${var.pg_password}",
+
     "MLFLOW_TRACKING_URI=http://mlflow:5000",
     "S3_ENDPOINT=http://minio:9000",
     "AWS_ACCESS_KEY_ID=${var.minio_access_key}",
     "AWS_SECRET_ACCESS_KEY=${var.minio_secret_key}",
-    "ARTIFACT_BUCKET=${var.minio_bucket}"
+    "ARTIFACT_BUCKET=${var.minio_bucket}",
+
+    # Switch to true after first successful training to load model from MLflow
+    "USE_MLFLOW_MODEL=false",
+    "MODEL_NAME=churn_model"
   ]
 
-  ports {
-    internal = 8000
-    external = 8000
-  }
+  ports { 
+    internal = 8000 
+    external = 8000 
+    }
 
-  networks_advanced {
-    name = docker_network.mlops_net.name
-  }
+  networks_advanced { name = docker_network.mlops_net.name }
 
   depends_on = [
     docker_container.mlflow,
@@ -176,16 +223,17 @@ resource "docker_container" "fastapi" {
   ]
 }
 
-# ---------- Airflow (scheduler + webserver in one container for simplicity) ----------
+# ---------- Airflow (scheduler + webserver) ----------
 resource "docker_container" "airflow" {
-  name  = "airflow"
-  image = data.docker_image.airflow.name
+  name    = "airflow"
+  image   = data.docker_image.airflow.name
   restart = "unless-stopped"
 
   env = [
     "AIRFLOW__CORE__LOAD_EXAMPLES=False",
     "AIRFLOW__WEBSERVER__RBAC=True",
-    "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${var.pg_user}:${var.pg_password}@pg:5432/${var.pg_db}",
+    "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db",
+
     "MLFLOW_TRACKING_URI=http://mlflow:5000",
     "S3_ENDPOINT=http://minio:9000",
     "AWS_ACCESS_KEY_ID=${var.minio_access_key}",
@@ -193,67 +241,67 @@ resource "docker_container" "airflow" {
     "ARTIFACT_BUCKET=${var.minio_bucket}"
   ]
 
-  # Run webserver; you can add scheduler via command override or docker-compose style if you prefer
-  command = ["bash", "-c", "airflow db init && airflow users create --username admin --firstname a --lastname b --role Admin --email admin@example.com --password admin || true && airflow webserver -p 8080"]
+  # Install deps, init Airflow, create user, start scheduler + webserver
+  command = [
+    "bash","-c",
+    "pip install --no-cache-dir mlflow==2.16.0 scikit-learn==1.5.1 pandas==2.2.2 boto3==1.34.* psycopg2-binary==2.9.9 && ",
+    "airflow db init && ",
+    "airflow users create --username admin --firstname a --lastname b --role Admin --email admin@example.com --password admin || true && ",
+    "airflow scheduler & airflow webserver -p 8080"
+  ]
 
-  ports {
+  ports { 
     internal = 8080
-    external = 8080
-  }
+    external = 8080 
+    }
 
   volumes {
-    host_path      = "${path.root}/../services/airflow/dags"
+    host_path      = local.dags_dir       
     container_path = "/opt/airflow/dags"
     read_only      = false
-  }
+    }
 
-  networks_advanced {
-    name = docker_network.mlops_net.name
-  }
+  networks_advanced { name = docker_network.mlops_net.name }
 
   depends_on = [
-    docker_container.postgres,
     docker_container.mlflow,
-    docker_container.minio
+    docker_container.minio,
+    docker_container.postgres
   ]
 }
 
 # ---------- Prometheus ----------
 resource "docker_container" "prometheus" {
-  name  = "prometheus"
-  image = data.docker_image.prom.name
+  name    = "prometheus"
+  image   = data.docker_image.prom.name
   restart = "unless-stopped"
 
-  ports {
-    internal = 9090
-    external = 9090
-  }
+  ports { 
+    internal = 9090 
+    external = 9090 
+    }
 
   volumes {
-    host_path      = "${path.root}/prometheus.yml"
+    host_path      = local.prometheus_cfg # was ./prometheus.yml
     container_path = "/etc/prometheus/prometheus.yml"
     read_only      = true
-  }
+    }
 
-  networks_advanced {
-    name = docker_network.mlops_net.name
-  }
+  networks_advanced { name = docker_network.mlops_net.name }
 }
 
 # ---------- Grafana ----------
 resource "docker_container" "grafana" {
-  name  = "grafana"
-  image = data.docker_image.grafana.name
+  name    = "grafana"
+  image   = data.docker_image.grafana.name
   restart = "unless-stopped"
 
-  ports {
+  ports { 
     internal = 3000
-    external = 3000
-  }
+    external = 3000 
+   }
 
-  networks_advanced {
-    name = docker_network.mlops_net.name
-  }
+  networks_advanced { name = docker_network.mlops_net.name }
 
   depends_on = [ docker_container.prometheus ]
 }

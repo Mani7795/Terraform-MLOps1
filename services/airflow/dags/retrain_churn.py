@@ -14,6 +14,6 @@ with DAG(
 
     # In a real project, call python to train and log to MLflow
     train = BashOperator(
-        task_id="train",
-        bash_command="echo 'simulate training... logging to MLflow' && sleep 5"
+        task_id="train_and_log",
+        bash_command="python ./airflow/dags/train.py"
     )
