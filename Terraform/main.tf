@@ -144,6 +144,7 @@ resource "docker_container" "mc_bootstrap" {
     "BUCKET=${var.minio_bucket}"
   ]
 
+
   # Create bucket if not exists, then exit
   command = [
     "bash","-c",
