@@ -31,46 +31,47 @@ resource "docker_network" "mlops_net" {
   name = "mlops_net"
 }
 
-resource "docker_volume" "pg_data"    { 
-    name = "pg_data" 
-    }
-resource "docker_volume" "minio_data" { 
-    name = "minio_data" 
-    }
-resource "docker_volume" "prom_data"  { 
-    name = "prom_data" 
-    }
-resource "docker_volume" "graf_data"  { 
-    name = "graf_data" 
-    }
+resource "docker_volume" "pg_data" {
+  name = "pg_data"
+}
+resource "docker_volume" "minio_data" {
+  name = "minio_data"
+}
+resource "docker_volume" "prom_data" {
+  name = "prom_data"
+}
+resource "docker_volume" "graf_data" {
+  name = "graf_data"
+}
 
 # ---------- Images ----------
-data "docker_image" "postgres"  { 
-    name = "postgres:15-alpine" 
-    }
-data "docker_image" "minio"     { 
-    name = "minio/minio:latest" 
-    }
-data "docker_image" "mlflow"    { 
-    name = "ghcr.io/mlflow/mlflow:latest" 
-    }
-data "docker_image" "airflow"   { 
-    name = "apache/airflow:2.9.3-python3.11" 
-    }
-data "docker_image" "prom"      { 
-    name = "prom/prometheus:latest" 
-    }
-data "docker_image" "grafana"   { 
-    name = "grafana/grafana:latest" 
-    }
-resource "docker_image" "mc" {
-    name         = "bitnami/minio-client:latest"
-    keep_locally = true
-    }
+data "docker_image" "postgres" {
+  name = "postgres:15-alpine"
+}
+data "docker_image" "minio" {
+  name = "minio/minio:latest"
+}
+data "docker_image" "mlflow" {
+  name = "ghcr.io/mlflow/mlflow:latest"
+}
+data "docker_image" "airflow" {
+  name = "apache/airflow:2.9.3-python3.11"
+}
+data "docker_image" "prom" {
+  name = "prom/prometheus:latest"
+}
+data "docker_image" "grafana" {
+  name = "grafana/grafana:latest"
+}
+resource "docker_image" "py" {
+  name         = "python:3.11-slim"
+  keep_locally = true
+}
 
 # Build the FastAPI image from local Dockerfile
 resource "docker_image" "fastapi" {
   name = "mlops-fastapi:latest"
+  keep_locally = true
   build {
     context    = local.fastapi_ctx
     dockerfile = "Dockerfile"
@@ -89,10 +90,10 @@ resource "docker_container" "postgres" {
     "POSTGRES_DB=${var.pg_db}"
   ]
 
-  ports { 
+  ports {
     internal = 5432
-    external = 5432 
-    }
+    external = 5432
+  }
 
   volumes {
     volume_name    = docker_volume.pg_data.name
@@ -101,7 +102,37 @@ resource "docker_container" "postgres" {
 
   networks_advanced { name = docker_network.mlops_net.name }
 }
+resource "docker_container" "bucket_bootstrap" {
+  name    = "bucket-bootstrap"
+  image   = docker_image.py.name
+  restart = "no"
 
+  env = [
+    "MINIO_ACCESS=${var.minio_access_key}",
+    "MINIO_SECRET=${var.minio_secret_key}",
+    "BUCKET=${var.minio_bucket}"
+  ]
+
+  command = [
+    "bash", "-c",
+    "pip install --no-cache-dir boto3 && python - <<'PY'\n",
+    "import os, boto3, botocore\n",
+    "s3 = boto3.client('s3', endpoint_url='http://minio:9000',\n",
+    "    aws_access_key_id=os.environ['MINIO_ACCESS'],\n",
+    "    aws_secret_access_key=os.environ['MINIO_SECRET'])\n",
+    "b = os.environ['BUCKET']\n",
+    "try:\n",
+    "    s3.head_bucket(Bucket=b)\n",
+    "    print('Bucket exists:', b)\n",
+    "except botocore.exceptions.ClientError:\n",
+    "    s3.create_bucket(Bucket=b)\n",
+    "    print('Bucket created:', b)\n",
+    "PY"
+  ]
+
+  networks_advanced { name = docker_network.mlops_net.name }
+  depends_on = [docker_container.minio]
+}
 # ---------- MinIO (S3-compatible) ----------
 resource "docker_container" "minio" {
   name    = "minio"
@@ -115,14 +146,14 @@ resource "docker_container" "minio" {
 
   command = ["server", "/data", "--console-address", ":9001"]
 
-  ports { 
-    internal = 9000 
-    external = 9000 
-    }
-  ports { 
+  ports {
+    internal = 9000
+    external = 9000
+  }
+  ports {
     internal = 9001
-    external = 9001 
-   }
+    external = 9001
+  }
 
   volumes {
     volume_name    = docker_volume.minio_data.name
@@ -132,31 +163,6 @@ resource "docker_container" "minio" {
   networks_advanced { name = docker_network.mlops_net.name }
 }
 
-# ---------- Create MinIO bucket via mc (one-time) ----------
-resource "docker_container" "mc_bootstrap" {
-  name    = "mc-bootstrap"
-  image   = docker_image.mc.name
-  restart = "no"
-
-  env = [
-    "MINIO_ACCESS=${var.minio_access_key}",
-    "MINIO_SECRET=${var.minio_secret_key}",
-    "BUCKET=${var.minio_bucket}"
-  ]
-
-
-  # Create bucket if not exists, then exit
-  command = [
-    "bash","-c",
-    "mc alias set local http://minio:9000 $MINIO_ACCESS $MINIO_SECRET && " ,
-    "mc ls local || true && " ,
-    "mc mb -p local/$BUCKET || true"
-  ]
-
-  networks_advanced { name = docker_network.mlops_net.name }
-
-  depends_on = [ docker_container.minio ]
-}
 
 
 # ---------- MLflow (Postgres backend + MinIO artifacts) ----------
@@ -178,17 +184,17 @@ resource "docker_container" "mlflow" {
     "--default-artifact-root", "s3://${var.minio_bucket}/"
   ]
 
-  ports { 
+  ports {
     internal = 5000
-    external = 5000 
-   }
+    external = 5000
+  }
 
   networks_advanced { name = docker_network.mlops_net.name }
 
   depends_on = [
     docker_container.postgres,
     docker_container.minio,
-    docker_container.mc_bootstrap
+    docker_container.bucket_bootstrap
   ]
 }
 
@@ -216,10 +222,10 @@ resource "docker_container" "fastapi" {
     "MODEL_NAME=churn_model"
   ]
 
-  ports { 
-    internal = 8000 
-    external = 8000 
-    }
+  ports {
+    internal = 8000
+    external = 8000
+  }
 
   networks_advanced { name = docker_network.mlops_net.name }
 
@@ -249,23 +255,23 @@ resource "docker_container" "airflow" {
 
   # Install deps, init Airflow, create user, start scheduler + webserver
   command = [
-    "bash","-c",
+    "bash", "-c",
     "pip install --no-cache-dir mlflow==2.16.0 scikit-learn==1.5.1 pandas==2.2.2 boto3==1.34.* psycopg2-binary==2.9.9 && ",
     "airflow db init && ",
     "airflow users create --username admin --firstname a --lastname b --role Admin --email admin@example.com --password admin || true && ",
     "airflow scheduler & airflow webserver -p 8080"
   ]
 
-  ports { 
+  ports {
     internal = 8080
-    external = 8080 
-    }
+    external = 8080
+  }
 
   volumes {
-    host_path      = local.dags_dir       
+    host_path      = local.dags_dir
     container_path = "/opt/airflow/dags"
     read_only      = false
-    }
+  }
 
   networks_advanced { name = docker_network.mlops_net.name }
 
@@ -282,16 +288,16 @@ resource "docker_container" "prometheus" {
   image   = data.docker_image.prom.name
   restart = "unless-stopped"
 
-  ports { 
-    internal = 9090 
-    external = 9090 
-    }
+  ports {
+    internal = 9092
+    external = 9092
+  }
 
   volumes {
     host_path      = local.prometheus_cfg # was ./prometheus.yml
-    container_path = "/etc/prometheus/prometheus.yml"
+    container_path = "/etc/prometheus"
     read_only      = true
-    }
+  }
 
   networks_advanced { name = docker_network.mlops_net.name }
 }
@@ -302,20 +308,20 @@ resource "docker_container" "grafana" {
   image   = data.docker_image.grafana.name
   restart = "unless-stopped"
 
-  ports { 
+  ports {
     internal = 3000
-    external = 3000 
-   }
+    external = 3000
+  }
 
   networks_advanced { name = docker_network.mlops_net.name }
 
-  depends_on = [ docker_container.prometheus ]
+  depends_on = [docker_container.prometheus]
 }
 
 # ---------- Outputs ----------
-output "mlflow_ui"   { value = "http://localhost:5000" }
-output "api_url"     { value = "http://localhost:8000/docs" }
-output "airflow_ui"  { value = "http://localhost:8080" }
-output "minio_ui"    { value = "http://localhost:9001 (user: ${var.minio_access_key})" }
-output "prometheus"  { value = "http://localhost:9090" }
-output "grafana"     { value = "http://localhost:3000 (default admin/admin)" }
+output "mlflow_ui" { value = "http://localhost:5000" }
+output "api_url" { value = "http://localhost:8000/docs" }
+output "airflow_ui" { value = "http://localhost:8080" }
+output "minio_ui" { value = "http://localhost:9001 (user: ${var.minio_access_key})" }
+output "prometheus" { value = "http://localhost:9090" }
+output "grafana" { value = "http://localhost:3000 (default admin/admin)" }
