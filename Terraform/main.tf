@@ -21,7 +21,7 @@ locals {
   repo_root      = abspath("${path.module}/..")
   dags_dir       = abspath("${path.module}/../services/airflow/dags")
   fastapi_ctx    = abspath("${path.module}/../services/fastapi")
-  prometheus_cfg = abspath("${path.module}/prometheus.yml")
+  prometheus_cfg = abspath("${path.module}/prometheus.yaml")
 }
 
 provider "docker" {}
@@ -289,7 +289,7 @@ resource "docker_container" "prometheus" {
   restart = "unless-stopped"
 
   ports {
-    internal = 9092
+    internal = 9090
     external = 9092
   }
 
