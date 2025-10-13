@@ -178,7 +178,13 @@ resource "docker_container" "mlflow" {
   ]
 
   command = [
-    "mlflow", "server",
+    "bash","-c",
+    # wait for postgres to be reachable (max ~60s)
+    "for i in $(seq 1 30); do nc -z pg 5432 && break || echo 'waiting for pg' && sleep 2; done; " ,
+    # install exact deps we need
+    "pip install --no-cache-dir mlflow==2.16.0 psycopg2-binary==2.9.9 && " ,
+    # start mlflow pointing to Postgres backend + MinIO artifacts
+    "mlflow server --host 0.0.0.0 --port 5000 " ,
     "--host", "0.0.0.0", "--port", "5000",
     "--backend-store-uri", "postgresql+psycopg2://${var.pg_user}:${var.pg_password}@pg:5432/${var.pg_db}",
     "--default-artifact-root", "s3://${var.minio_bucket}/"
