@@ -210,7 +210,6 @@ resource "docker_container" "fastapi" {
     "DB_NAME=${var.pg_db}",
     "DB_USER=${var.pg_user}",
     "DB_PASSWORD=${var.pg_password}",
-
     "MLFLOW_TRACKING_URI=http://mlflow:5000",
     "S3_ENDPOINT=http://minio:9000",
     "AWS_ACCESS_KEY_ID=${var.minio_access_key}",
@@ -295,7 +294,7 @@ resource "docker_container" "prometheus" {
 
   volumes {
     host_path      = local.prometheus_cfg # was ./prometheus.yml
-    container_path = "/etc/prometheus"
+    container_path = "/etc/prometheus/prometheus.yaml"
     read_only      = true
   }
 

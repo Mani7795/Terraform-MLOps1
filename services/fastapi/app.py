@@ -12,14 +12,20 @@ REQS = Counter("inference_requests_total", "Total inference requests")
 LAT  = Histogram("inference_latency_seconds", "Inference latency")
 
 # DB
+DB_HOST = os.getenv("DB_HOST", "pg")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_NAME = os.getenv("DB_NAME", "mlopsdb")
+DB_USER = os.getenv("DB_USER", "mlops")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "mlops_pass")
+
 conn = psycopg2.connect(
-    dbname=os.getenv("DATABASE_URL").split("/")[-1],
-    user=os.getenv("DATABASE_URL").split("//")[1].split(":")[0],
-    password=os.getenv("DATABASE_URL").split(":")[2].split("@")[0],
-    host=os.getenv("DATABASE_URL").split("@")[1].split(":")[0],
-    port=os.getenv("DATABASE_URL").split(":")[-1]
+    host=DB_HOST,
+    port=DB_PORT,
+    dbname=DB_NAME,
+    user=DB_USER,
+    password=DB_PASSWORD
 )
-cur = conn.cursor()
+cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 cur.execute("""
 CREATE TABLE IF NOT EXISTS predictions(
   id SERIAL PRIMARY KEY,
