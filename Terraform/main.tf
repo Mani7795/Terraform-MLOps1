@@ -168,15 +168,13 @@ resource "docker_container" "minio" {
 # ---------- MLflow (Postgres backend + MinIO artifacts) ----------
 resource "docker_container" "mlflow" {
   name    = "mlflow"
-  image   = docker_image.mlflow.name   # python:3.11-slim
+  image   = data.docker_image.mlflow.name
   restart = "unless-stopped"
 
   env = [
     "MLFLOW_S3_ENDPOINT_URL=http://minio:9000",
     "AWS_ACCESS_KEY_ID=${var.minio_access_key}",
-    "AWS_SECRET_ACCESS_KEY=${var.minio_secret_key}",
-    "AWS_DEFAULT_REGION=us-east-1",
-    "AWS_EC2_METADATA_DISABLED=true",
+    "AWS_SECRET_ACCESS_KEY=${var.minio_secret_key}"
   ]
 
   command = [
@@ -202,18 +200,19 @@ resource "docker_container" "mlflow" {
     "--default-artifact-root s3://${var.minio_bucket}/"
   ]
 
-  ports { 
+  ports {
     internal = 5000
-    external = 5000 
-    }
+    external = 5000
+  }
+
   networks_advanced { name = docker_network.mlops_net.name }
+
   depends_on = [
     docker_container.postgres,
     docker_container.minio,
     docker_container.bucket_bootstrap
   ]
 }
-
 
 # ---------- FastAPI Inference Service ----------
 resource "docker_container" "fastapi" {
