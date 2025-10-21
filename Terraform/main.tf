@@ -168,41 +168,52 @@ resource "docker_container" "minio" {
 # ---------- MLflow (Postgres backend + MinIO artifacts) ----------
 resource "docker_container" "mlflow" {
   name    = "mlflow"
-  image   = data.docker_image.mlflow.name
+  image   = docker_image.mlflow.name   # python:3.11-slim
   restart = "unless-stopped"
 
   env = [
     "MLFLOW_S3_ENDPOINT_URL=http://minio:9000",
     "AWS_ACCESS_KEY_ID=${var.minio_access_key}",
-    "AWS_SECRET_ACCESS_KEY=${var.minio_secret_key}"
+    "AWS_SECRET_ACCESS_KEY=${var.minio_secret_key}",
+    "AWS_DEFAULT_REGION=us-east-1",
+    "AWS_EC2_METADATA_DISABLED=true",
   ]
 
   command = [
     "bash","-c",
-    # wait for postgres to be reachable (max ~60s)
-    "for i in $(seq 1 30); do nc -z pg 5432 && break || echo 'waiting for pg' && sleep 2; done; " ,
-    # install exact deps we need
+    # install deps
     "pip install --no-cache-dir mlflow==2.16.0 psycopg2-binary==2.9.9 && " ,
-    # start mlflow pointing to Postgres backend + MinIO artifacts
+
+    # wait for Postgres using psycopg2
+    "python - <<'PY'\n",
+    "import time, psycopg2\n",
+    "for i in range(30):\n",
+    "  try:\n",
+    "    psycopg2.connect(host='pg', port=5432, dbname='${var.pg_db}', user='${var.pg_user}', password='${var.pg_password}').close()\n",
+    "    print('Postgres is ready'); break\n",
+    "  except Exception as e:\n",
+    "    print('waiting for pg...', e); time.sleep(2)\n",
+    "PY\n",
+    " && " ,
+
+    # start mlflow
     "mlflow server --host 0.0.0.0 --port 5000 " ,
-    "--host", "0.0.0.0", "--port", "5000",
-    "--backend-store-uri", "postgresql+psycopg2://${var.pg_user}:${var.pg_password}@pg:5432/${var.pg_db}",
-    "--default-artifact-root", "s3://${var.minio_bucket}/"
+    "--backend-store-uri postgresql+psycopg2://${var.pg_user}:${var.pg_password}@pg:5432/${var.pg_db} " ,
+    "--default-artifact-root s3://${var.minio_bucket}/"
   ]
 
-  ports {
+  ports { 
     internal = 5000
-    external = 5000
-  }
-
+    external = 5000 
+    }
   networks_advanced { name = docker_network.mlops_net.name }
-
   depends_on = [
     docker_container.postgres,
     docker_container.minio,
     docker_container.bucket_bootstrap
   ]
 }
+
 
 # ---------- FastAPI Inference Service ----------
 resource "docker_container" "fastapi" {
