@@ -113,6 +113,8 @@ resource "docker_container" "bucket_bootstrap" {
     "BUCKET=${var.minio_bucket}"
   ]
 
+
+
   command = [
     "bash", "-c",
     "pip install --no-cache-dir boto3 && python - <<'PY'\n",
