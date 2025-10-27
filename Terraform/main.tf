@@ -78,6 +78,9 @@ resource "docker_image" "fastapi" {
   }
 }
 
+
+
+
 # ---------- Postgres ----------
 resource "docker_container" "postgres" {
   name    = "pg"
